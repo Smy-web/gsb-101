@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List
 from database import get_db
@@ -6,6 +7,8 @@ from models import Material
 from schemas import MaterialCreate, MaterialResponse
 
 router = APIRouter(prefix="/api/materials", tags=["materials"])
+
+BUILTIN_CATEGORIES = ["苔藓", "沉木", "底床", "石材", "水草", "设备"]
 
 MOCK_MATERIALS = [
     {
@@ -138,36 +141,44 @@ MOCK_MATERIALS = [
     }
 ]
 
+def _ensure_seeded(db: Session) -> None:
+    if db.query(Material).count() > 0:
+        return
+    for item in MOCK_MATERIALS:
+        db.add(Material(**item))
+    db.commit()
+
+
+def _normalize(value: str) -> str:
+    return value.strip().lower()
+
+
 @router.get("/", response_model=List[MaterialResponse])
 def get_materials(category: str = None, db: Session = Depends(get_db)):
+    _ensure_seeded(db)
     query = db.query(Material)
-    if category:
-        query = query.filter(Material.category == category)
-    materials = query.all()
-    
-    if not materials:
-        return MOCK_MATERIALS
-    
-    return materials
+    if category is not None and category.strip():
+        query = query.filter(func.lower(Material.category) == _normalize(category))
+    return query.order_by(Material.id).all()
+
+@router.get("/categories")
+def get_categories(db: Session = Depends(get_db)):
+    _ensure_seeded(db)
+    values = {row[0] for row in db.query(Material.category).distinct() if row[0]}
+    extras = sorted(value for value in values if value not in BUILTIN_CATEGORIES)
+    return BUILTIN_CATEGORIES + extras
 
 @router.get("/{material_id}", response_model=MaterialResponse)
 def get_material(material_id: int, db: Session = Depends(get_db)):
+    _ensure_seeded(db)
     material = db.query(Material).filter(Material.id == material_id).first()
-    
     if not material:
-        for mock in MOCK_MATERIALS:
-            if mock["id"] == material_id:
-                return mock
         raise HTTPException(status_code=404, detail="Material not found")
-    
     return material
-
-@router.get("/categories")
-def get_categories():
-    return ["苔藓", "沉木", "底床", "石材", "水草", "设备"]
 
 @router.post("/", response_model=MaterialResponse)
 def create_material(material: MaterialCreate, db: Session = Depends(get_db)):
+    _ensure_seeded(db)
     db_material = Material(**material.model_dump())
     db.add(db_material)
     db.commit()
@@ -176,23 +187,25 @@ def create_material(material: MaterialCreate, db: Session = Depends(get_db)):
 
 @router.put("/{material_id}", response_model=MaterialResponse)
 def update_material(material_id: int, material: MaterialCreate, db: Session = Depends(get_db)):
+    _ensure_seeded(db)
     db_material = db.query(Material).filter(Material.id == material_id).first()
     if not db_material:
         raise HTTPException(status_code=404, detail="Material not found")
-    
+
     for key, value in material.model_dump().items():
         setattr(db_material, key, value)
-    
+
     db.commit()
     db.refresh(db_material)
     return db_material
 
 @router.delete("/{material_id}")
 def delete_material(material_id: int, db: Session = Depends(get_db)):
+    _ensure_seeded(db)
     db_material = db.query(Material).filter(Material.id == material_id).first()
     if not db_material:
         raise HTTPException(status_code=404, detail="Material not found")
-    
+
     db.delete(db_material)
     db.commit()
     return {"message": "Material deleted successfully"}
