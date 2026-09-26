@@ -1,4 +1,7 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List
 from database import get_db
@@ -91,38 +94,58 @@ MOCK_CASES = [
     }
 ]
 
+BUILTIN_STYLES = ["ADA自然风格", "Iwagumi石景风格", "荷兰景风格", "凹形构图风格", "凸形构图风格", "中式山水风格"]
+
+
+def _ensure_seeded(db: Session):
+    if db.query(CaseStudy).count() == 0:
+        for item in MOCK_CASES:
+            data = dict(item)
+            data["created_at"] = datetime.fromisoformat(data["created_at"])
+            db.add(CaseStudy(**data))
+        db.commit()
+
+
+def _normalize_filter(value):
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
 @router.get("/", response_model=List[CaseStudyResponse])
 def get_cases(style: str = None, difficulty: str = None, db: Session = Depends(get_db)):
+    _ensure_seeded(db)
     query = db.query(CaseStudy)
-    if style:
-        query = query.filter(CaseStudy.style == style)
-    if difficulty:
-        query = query.filter(CaseStudy.difficulty == difficulty)
-    cases = query.all()
-    
-    if not cases:
-        return MOCK_CASES
-    
-    return cases
+    style = _normalize_filter(style)
+    if style is not None:
+        query = query.filter(func.lower(func.trim(CaseStudy.style)) == style.lower())
+    difficulty = _normalize_filter(difficulty)
+    if difficulty is not None:
+        query = query.filter(func.lower(func.trim(CaseStudy.difficulty)) == difficulty.lower())
+    return query.order_by(CaseStudy.id).all()
+
+
+@router.get("/styles")
+def get_styles(db: Session = Depends(get_db)):
+    _ensure_seeded(db)
+    stored = {row[0] for row in db.query(CaseStudy.style).distinct() if row[0]}
+    extras = sorted(stored - set(BUILTIN_STYLES))
+    return BUILTIN_STYLES + extras
+
 
 @router.get("/{case_id}", response_model=CaseStudyResponse)
 def get_case(case_id: int, db: Session = Depends(get_db)):
+    _ensure_seeded(db)
     case = db.query(CaseStudy).filter(CaseStudy.id == case_id).first()
-    
     if not case:
-        for mock in MOCK_CASES:
-            if mock["id"] == case_id:
-                return mock
         raise HTTPException(status_code=404, detail="Case study not found")
-    
     return case
 
-@router.get("/styles")
-def get_styles():
-    return ["ADA自然风格", "Iwagumi石景风格", "荷兰景风格", "凹形构图风格", "凸形构图风格", "中式山水风格"]
 
 @router.post("/", response_model=CaseStudyResponse)
 def create_case(case: CaseStudyCreate, db: Session = Depends(get_db)):
+    _ensure_seeded(db)
     db_case = CaseStudy(**case.model_dump())
     db.add(db_case)
     db.commit()
@@ -131,6 +154,7 @@ def create_case(case: CaseStudyCreate, db: Session = Depends(get_db)):
 
 @router.put("/{case_id}", response_model=CaseStudyResponse)
 def update_case(case_id: int, case: CaseStudyCreate, db: Session = Depends(get_db)):
+    _ensure_seeded(db)
     db_case = db.query(CaseStudy).filter(CaseStudy.id == case_id).first()
     if not db_case:
         raise HTTPException(status_code=404, detail="Case study not found")
@@ -144,6 +168,7 @@ def update_case(case_id: int, case: CaseStudyCreate, db: Session = Depends(get_d
 
 @router.delete("/{case_id}")
 def delete_case(case_id: int, db: Session = Depends(get_db)):
+    _ensure_seeded(db)
     db_case = db.query(CaseStudy).filter(CaseStudy.id == case_id).first()
     if not db_case:
         raise HTTPException(status_code=404, detail="Case study not found")
